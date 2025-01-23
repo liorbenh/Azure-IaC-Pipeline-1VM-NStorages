@@ -1,0 +1,277 @@
+trigger:
+- none
+
+pool: my-personal-computer
+
+parameters:
+- name: activeVariableGroupName
+  displayName: active Variable Group Name
+  type: string
+  default: ''
+- name: resourceGroupName
+  displayName: Resource Group Name
+  type: string
+  default: ''
+- name: azureServiceConnection
+  displayName: Azure Service Connection
+  type: string
+  default: ''
+- name: debug
+  displayName: Debug Mode
+  type: boolean
+  default: true
+
+variables:
+- group: ${{ parameters.activeVariableGroupName }}
+- name:  system.debug
+  value: ${{ parameters.debug }}
+
+jobs: 
+- job: InfrastructureSetup
+  displayName: 'Setup Infrastructure'
+  steps:
+    # Step 0: Print Pipeline Variables
+    - script: |
+        echo "Active Variable Group Name: ${{ parameters.activeVariableGroupName }}"
+        echo "Resource Group Name: ${{ parameters.resourceGroupName }}"
+        echo "Azure Service Connection: ${{ parameters.azureServiceConnection }}"
+      displayName: 'Print Pipeline Variables'
+
+    # Step 1: Install Azure CLI
+    - script: |
+        echo "Checking if Azure CLI is installed"
+        echo "Please watch the installation process in your machine, you may need to provide sudo password"
+        if ! command -v az &> /dev/null; then
+          echo "Azure CLI not found. Installing Azure CLI"
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+        else
+          echo "Azure CLI is already installed"
+        fi
+        az --version
+      displayName: 'Install Azure CLI'
+
+    # Step 3: Retrieve Subscription ID
+    - task: AzureCLI@2
+      displayName: 'Retrieve Subscription ID'
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Retrieving subscription ID"
+          subscriptionId=$(az account show --query id -o tsv)
+          echo "##vso[task.setvariable variable=subscriptionId]$subscriptionId"
+
+    # Step 4: Create Resource Group with Tags
+    - task: AzureCLI@2
+      displayName: 'Create Resource Group'
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Creating resource group with tags"
+          az group create --name ${{ parameters.resourceGroupName }} --location $(location) --tags subproject=$(subproject) environment=$(environment) location=$(location) owner=$(owner)
+    
+    ### Steps 5-8 are for deploying network, server, and storage resources ###
+    ### NOTE: Must be in that order - there are dependencies ###
+    ### (Server and storage take network output, storage takes server output) ###
+
+    # Step 5: Deploy Network Resources
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Deploy Network'
+      inputs:
+        subscriptionId: $(subscriptionId)
+        action: 'Create Or Update Resource Group'
+        deploymentScope: 'Resource Group'
+        deploymentName: networkDeployment
+        azureResourceManagerConnection: ${{ parameters.azureServiceConnection }}
+        resourceGroupName: ${{ parameters.resourceGroupName }}
+        location: $(location)
+        templateLocation: 'Linked artifact'
+        csmFile: 'infrastructure/templates/arm/network.json'
+        deploymentMode: 'Incremental'
+        deploymentOutputs: 'networkOutputs'
+
+    # Step 5.1: Set Network Output Variables
+    - task: PowerShell@2
+      displayName: 'Set Network Output Variables'
+      inputs:
+        targetType: inline
+        script: |
+          $armOutputObj = '$(networkOutputs)' | ConvertFrom-Json
+          $armOutputObj.PSObject.Properties | ForEach-Object {
+            $keyname = $_.Name
+            $value = $_.Value.value
+
+            # Creates a standard pipeline variable
+            Write-Output "##vso[task.setvariable variable=$keyName;issecret=true]$value"
+
+            # Display keys in pipeline
+            Write-Output "output variable: $keyName"
+          }
+        pwsh: true
+
+    # Step 6: Deploy Server Resources
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Deploy Server'
+      inputs:
+        subscriptionId: $(subscriptionId)
+        action: 'Create Or Update Resource Group'
+        deploymentScope: 'Resource Group'
+        deploymentName: serverDeployment
+        azureResourceManagerConnection: ${{ parameters.azureServiceConnection }}
+        resourceGroupName: ${{ parameters.resourceGroupName }}
+        location: $(location)
+        templateLocation: 'Linked artifact'
+        csmFile: 'infrastructure/templates/arm/server.json'
+        overrideParameters: -adminUsername $(adminUsername) -adminPasswordOrKey $(adminPassword) -virtualNetworkName $(vnetName) -subnetName $(subnetName) -publicIpName $(publicIpName)
+        deploymentMode: 'Incremental'
+        deploymentOutputs: 'serverOutputs'
+
+    # Step 6.1: Set Server Output Variables
+    - task: PowerShell@2
+      displayName: 'Set Server Output Variables'
+      inputs:
+        targetType: inline
+        script: |
+          $armOutputObj = '$(serverOutputs)' | ConvertFrom-Json
+          $armOutputObj.PSObject.Properties | ForEach-Object {
+            $keyname = $_.Name
+            $value = $_.Value.value
+
+            # Creates a standard pipeline variable
+            Write-Output "##vso[task.setvariable variable=$keyName;issecret=true]$value"
+
+            # Display keys in pipeline
+            Write-Output "output variable: $keyName"
+          }
+        pwsh: true    
+        
+    # Step 7: Deploy Storage Accounts with VM Access
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Deploy Storage Accounts with VM Access'
+      inputs:
+        subscriptionId: $(subscriptionId)
+        action: 'Create Or Update Resource Group'
+        deploymentScope: 'Resource Group'
+        deploymentName: storageDeployment
+        azureResourceManagerConnection: ${{ parameters.azureServiceConnection }}
+        resourceGroupName: ${{ parameters.resourceGroupName }}
+        location: $(location)
+        templateLocation: 'Linked artifact'
+        csmFile: 'infrastructure/templates/arm/storage.json'
+        overrideParameters: -virtualNetworkName $(vnetName) -subnetName $(subnetName) -blobPrivateDnsZoneName $(blobPrivateDnsZoneName) -vmName $(vmName)
+        deploymentMode: 'Incremental'
+    
+    # Step 7.1: Set storage accounts names in Variable Group
+    - script: |
+        # Step 1: Get deployment outputs
+        blobStorageAccountsNames=$(az deployment group show \
+          --resource-group "${{ parameters.resourceGroupName }}" \
+          --name "storageDeployment" \
+          --query "properties.outputs.blobStorageAccountsNames.value")
+
+        # Verify the output is an array
+        if [[ "$blobStorageAccountsNames" =~ ^\[.*\]$ ]]; then
+            echo "Blob storage accounts names retrieved: $blobStorageAccountsNames"
+        else
+            echo "Error: Output is not in expected array format"
+            exit 1
+        fi
+
+        # Step 2: Login to Azure DevOps
+        echo $(AccessToken) | az devops login
+
+        # Step 3: Get the variable group ID by name
+        groupId=$(az pipelines variable-group list \
+          --group-name "${{ parameters.activeVariableGroupName }}" \
+          --query '[0].id' \
+          --organization $(organizationUrl) \
+          --project $(project) -o tsv)
+
+        echo "Group ID: $groupId"
+        if [ -z "$groupId" ]; then
+          echo "Variable group not found: ${{ parameters.activeVariableGroupName }}"
+          exit 1
+        fi
+
+        # Step 4: Join the array into a comma-separated string
+        storageAccounts=$(echo "$blobStorageAccountsNames" | jq -r '. | join(",")')
+        echo "Prepared storage accounts: $storageAccounts"
+
+        # Step 5: Check if the variable 'storageAccounts' exists in the variable group
+        variableExists=$(az pipelines variable-group variable list \
+          --group-id $groupId \
+          --query "contains(keys(@), 'storageAccounts')" -o tsv)
+
+        echo "Variable 'storageAccounts' exists: $variableExists"
+
+        # Step 6: Add or update the 'storageAccounts' variable in the variable group
+        if [ "$variableExists" = "true" ]; then
+            echo "Updating existing variable 'storageAccounts'..."
+            az pipelines variable-group variable update \
+              --group-id $groupId \
+              --name "storageAccounts" \
+              --value "$storageAccounts" \
+              --secret false
+        else
+            echo "Creating new variable 'storageAccounts'..."
+            az pipelines variable-group variable create \
+              --group-id $groupId \
+              --name "storageAccounts" \
+              --value "$storageAccounts" \
+              --secret false
+        fi
+
+        echo "Operation completed for storageAccounts variable: $storageAccounts"
+      env:
+        AccessToken: $(System.AccessToken)
+      displayName: "Retrieve and Set Storage Accounts in Variable Group"
+    
+    # Step 8.1: Set VM Name for next job
+    - script: |
+        #!/bin/bash        
+        echo "##vso[task.setvariable variable=vmName;isOutput=true]$(vmName)"x
+      name: setvarStep
+      displayName: 'Set VM Name for next job'
+    
+    # Step 8.2: Set VM name in Variable Group
+    - script: | 
+        # Login to Azure DevOps and capture output
+        echo $(AccessToken) | az devops login
+
+        # Get the variable group ID by name
+        groupId=$(az pipelines variable-group list --group-name "${{ parameters.activeVariableGroupName }}" --query '[0].id' --organization $(organizationUrl) --project $(project) -o tsv)
+        
+        echo "groupId: $groupId"
+        if [ -z "$groupId" ]; then
+          echo "Variable group not found: ${{ parameters.activeVariableGroupName }}"
+          exit 1
+        fi
+
+        # Check if the variable vmName already exists in the variable group
+        variableExists=$(az pipelines variable-group variable list \
+          --group-id $groupId \
+          --query "contains(keys(@), 'vmName')" -o tsv)
+        
+        echo "Variable 'vmName' exists: $variableExists"
+
+        if [ "$variableExists" = "true" ]; then
+          echo "Updating existing variable 'vmName'..."
+          az pipelines variable-group variable update \
+            --group-id $groupId \
+            --name "vmName" \
+            --value "$(vmName)" \
+            --secret false
+        else
+          echo "Creating new variable 'vmName'..."
+          az pipelines variable-group variable create \
+            --group-id $groupId \
+            --name "vmName" \
+            --value "$(vmName)" \
+            --secret false
+        fi
+      env:
+        AccessToken: $(System.AccessToken)
+      displayName: "Add or Update vmName in Variable Group"

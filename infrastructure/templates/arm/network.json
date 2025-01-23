@@ -1,0 +1,176 @@
+// This file deploys a virtual network, subnets, network security groups, public IP addresses, and private DNS zones.
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "UID": {
+        "type": "string",
+        "defaultValue": "[toLower(substring(uniqueString(resourceGroup().id), 0, 10))]",
+        "metadata": {
+            "description": "Unique Identifier"
+        }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Specifies the location for all the resources."
+      }
+    },
+    "virtualNetworkName": {
+      "defaultValue": "[concat('vnet-', parameters('UID'))]",
+      "type": "string",
+      "metadata": {
+        "description": "Specifies the name of the virtual network hosting the virtual machine."
+      }
+    },
+    "virtualNetworkAddressPrefix": {
+      "defaultValue": "10.0.0.0/16",
+      "type": "string",
+      "metadata": {
+        "description": "Specifies the address prefix of the virtual network hosting the virtual machine."
+      }
+    },
+    "subnetName": {
+      "defaultValue": "[concat('subnet-', parameters('UID'))]",
+      "type": "string",
+      "metadata": {
+        "description": "Specifies the name of the subnet hosting the virtual machine."
+      }
+    },
+    "subnetAddressPrefix": {
+      "defaultValue": "10.0.1.0/24",
+      "type": "string",
+      "metadata": {
+        "description": "Specifies the address prefix of the subnet hosting the virtual machine."
+      }
+    },
+    "publicIPAddressType": {
+      "defaultValue": "Dynamic",
+      "type": "string",
+      "metadata": {
+        "description": "Specifies the public IP address allocation method."
+      }
+    }
+  },
+  "variables": {
+    "blobPublicDNSZoneForwarder": "[concat('.blob.', environment().suffixes.storage)]",
+    "blobPrivateDnsZoneName": "[concat('privatelink', variables('blobPublicDNSZoneForwarder'))]",
+    // The Private DNS Zone Name must adhere to Microsoft's recommended naming conventions to ensure 
+    // proper recording in the private DNS zone record set and accurate DNS configuration within the private endpoint settings.
+    "nsgName": "[concat('Nsg-',parameters('subnetName'))]",
+    "publicIPAddressName": "[concat(parameters('virtualNetworkName'), '-PublicIp')]",
+    "vnetId": "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]",
+    "nsgId": "[resourceId('Microsoft.Network/networkSecurityGroups',variables('nsgName'))]"
+  },
+  "resources": [
+    {
+      "apiVersion": "2020-04-01",
+      "type": "Microsoft.Network/publicIPAddresses",
+      "name": "[variables('publicIPAddressName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "publicIPAllocationMethod": "[parameters('publicIPAddressType')]",
+        "dnsSettings": {
+          "domainNameLabel": "[concat(toLower(parameters('virtualNetworkName')), uniquestring(resourceGroup().id))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[variables('blobPrivateDnsZoneName')]",
+      "location": "global"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2018-09-01",
+      "name": "[concat(variables('blobPrivateDnsZoneName'), '/link_to_', toLower(parameters('virtualNetworkName')))]",
+      "location": "global",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('blobPrivateDnsZoneName'))]",
+        "[variables('vnetId')]"
+      ],
+      "properties": {
+        "registrationEnabled": true,
+        "virtualNetwork": {
+          "id": "[variables('vnetId')]"
+        }
+      }
+    },
+    {
+      "apiVersion": "2019-08-01",
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "name": "[variables('nsgName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "AllowSshInbound",
+            "properties": {
+              "priority": 100,
+              "access": "Allow",
+              "direction": "Inbound",
+              "destinationPortRange": "22",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2019-11-01",
+      "type": "Microsoft.Network/virtualNetworks",
+      "name": "[parameters('virtualNetworkName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[variables('nsgId')]"
+      ],
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[parameters('virtualNetworkAddressPrefix')]"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[parameters('subnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('subnetAddressPrefix')]",
+              "networkSecurityGroup": {
+                "id": "[variables('nsgId')]"
+              },
+              "privateEndpointNetworkPolicies": "Disabled",
+              "privateLinkServiceNetworkPolicies": "Enabled"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "publicIpName": {
+      "value": "[variables('publicIPAddressName')]",
+      "type": "string"
+    },
+    "subnetName": {
+      "value": "[parameters('subnetName')]",
+      "type": "string"
+    },
+    "vnetName": {
+      "value": "[parameters('virtualNetworkName')]",
+      "type": "string"
+    },
+    "nsgName": {
+      "value": "[variables('nsgName')]",
+      "type": "string"
+    },
+    "blobPrivateDnsZoneName": {
+      "value": "[variables('blobPrivateDnsZoneName')]",
+      "type": "string"
+    }
+  }
+}

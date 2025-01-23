@@ -1,0 +1,223 @@
+trigger:
+- none 
+
+pool: my-personal-computer
+
+parameters:
+- name: activeVariableGroupName
+  displayName: active Variable Group Name
+  type: string
+  default: ''
+- name: resourceGroupName
+  displayName: Resource Group Name
+  type: string
+  default: ''
+- name: azureServiceConnection
+  displayName: Azure Service Connection
+  type: string
+  default: ''
+- name: srcStorageAccount
+  displayName: Source Storage Account (default takes the value from variable group)
+  type: string
+  default: 'default'
+- name: destStorageAccount
+  displayName: Destination Storage Account (default takes the value from variable group)
+  type: string
+  default: 'default' # can be a list of storage accounts names separated by comma (',')
+- name: containerName
+  displayName: Container Name
+  type: string
+  default: 'blobdefaultcontainer'
+- name: upload
+  displayName: Upload Blobs
+  type: boolean
+  default: true
+- name: vmName
+  displayName: VM Name (default takes the value from variable group)
+  type: string
+  default: 'default'
+- name: debug
+  displayName: Debug Mode
+  type: boolean
+  default: true
+
+variables:
+- group: ${{ parameters.activeVariableGroupName }}
+- name:  system.debug
+  value: ${{ parameters.debug }}
+
+jobs: 
+- job: BlobManagementExecution
+  displayName: 'Execute Blob Management'
+  steps:
+    # Step 0: Print Pipeline Variables
+    - script: |
+        echo "Resource Group Name: ${{ parameters.resourceGroupName }}"
+        echo "Azure Service Connection: ${{ parameters.azureServiceConnection }}"
+        echo "Source Storage Account: ${{ parameters.srcStorageAccount }}"
+        echo "Destination Storage Account: ${{ parameters.destStorageAccount }}"
+        echo "Container Name: ${{ parameters.containerName }}"
+        echo "Upload Blobs: ${{ parameters.upload }}"
+        echo "VM Name: ${{ parameters.vmName }}"
+      displayName: 'Print Pipeline Variables'
+
+    # Step 1: Retrieve VM name from the variable group (only if parameter is in default mode)
+    - script: | 
+        # Login to Azure DevOps and capture output
+        echo $(AccessToken) | az devops login
+        
+        echo "Retrieving VM name from the variable group if parameter is in default mode"
+        
+        # Check if the vmName parameter is default
+        if [ "${{ parameters.vmName }}" = "default" ]; then
+          echo "vmName parameter is in default mode. Retrieving from variable group."
+
+          # Get the variable group ID by name
+          groupId=$(az pipelines variable-group list --group-name "${{ parameters.activeVariableGroupName }}" --query '[0].id' -o tsv)
+          if [ -z "$groupId" ]; then
+            echo "Variable group not found: ${{ parameters.activeVariableGroupName }}"
+            exit 1
+          fi
+
+          # Retrieve the vmName variable value from the variable group
+          vmName=$(az pipelines variable-group variable list --group-id $groupId --query "vmName.value" -o tsv)
+          if [ -z "$vmName" ]; then
+            echo "vmName variable not found in variable group: ${{ parameters.activeVariableGroupName }}"
+            exit 1
+          fi
+
+          # Set the vmName variable for subsequent pipeline tasks
+          echo "##vso[task.setvariable variable=vmName]$vmName"
+          echo "Retrieved VM Name: $vmName"
+        else
+          echo "Using provided vmName: ${{ parameters.vmName }}"
+
+          # If not in default mode, use the parameter
+          vmName="${{ parameters.vmName }}"
+
+          # Set the provided vmName as a pipeline variable
+          echo "##vso[task.setvariable variable=vmName]$vmName"
+        fi
+
+        # Output the VM Name
+        echo "VM Name: $vmName"
+      env:
+        AccessToken: $(System.AccessToken)
+      displayName: 'Retrieve or Use Provided VM Name'
+
+    # Step 2: Retrieve source and destination storage accounts from the variable group (only if parameter is in default mode)
+    - script: | 
+        # Login to Azure DevOps and capture output
+        echo $(System.AccessToken) | az devops login
+
+        echo "Retrieving source and destination storage accounts"
+
+        # Check if srcStorageAccount and destStorageAccount are default
+        if [ "${{ parameters.srcStorageAccount }}" = "default" ] && [ "${{ parameters.destStorageAccount }}" = "default" ]; then
+          echo "srcStorageAccount and destStorageAccount are in default mode. Retrieving from variable group."
+          
+          # Get the variable group ID by name
+          groupId=$(az pipelines variable-group list --group-name "${{ parameters.activeVariableGroupName }}" --query '[0].id' -o tsv)
+          if [ -z "$groupId" ]; then
+            echo "Variable group not found: ${{ parameters.activeVariableGroupName }}"
+            exit 1
+          fi
+
+          # Retrieve the storageAccounts variable value from the variable group
+          storageAccounts=$(az pipelines variable-group variable list --group-id $groupId --query "storageAccounts.value" -o tsv)
+          if [ -z "$storageAccounts" ]; then
+            echo "StorageAccounts variable not found in variable group: ${{ parameters.activeVariableGroupName }}"
+            exit 1
+          fi
+
+          # Split the storageAccounts string into an array by commas
+          IFS=',' read -ra STORAGE_ACCOUNTS <<< "$storageAccounts"
+
+          # First account is the source storage account
+          srcStorageAccountDefault=${STORAGE_ACCOUNTS[0]}
+          echo "Retrieved Source Storage Account (from variable group): $srcStorageAccountDefault"
+
+          # Remaining accounts are the destination storage accounts
+          destStorageAccountDefault=$(IFS=,; echo "${STORAGE_ACCOUNTS[*]:1}")
+          echo "Retrieved Destination Storage Accounts (from variable group): $destStorageAccountDefault"
+
+          srcStorageAccount="$srcStorageAccountDefault"
+          destStorageAccount="$destStorageAccountDefault"
+
+          # Set the retrieved storage accounts as pipeline variables
+          echo "##vso[task.setvariable variable=srcStorageAccount]$srcStorageAccountDefault"
+          echo "##vso[task.setvariable variable=destStorageAccount]$destStorageAccountDefault"
+          
+        else
+          echo "Using provided srcStorageAccount: ${{ parameters.srcStorageAccount }}"
+          echo "Using provided destStorageAccount: ${{ parameters.destStorageAccount }}"
+          
+          # If not in default mode, use the parameters
+          srcStorageAccount="${{ parameters.srcStorageAccount }}"
+          destStorageAccount="${{ parameters.destStorageAccount }}"
+          
+          # Set the provided values as pipeline variables
+          echo "##vso[task.setvariable variable=srcStorageAccount]$srcStorageAccount"
+          echo "##vso[task.setvariable variable=destStorageAccount]$destStorageAccount"
+        fi
+
+        # Output the values of both storage accounts
+        echo "Source Storage Account: $srcStorageAccount"
+        echo "Destination Storage Account: $destStorageAccount"
+      env:
+        AccessToken: $(System.AccessToken)
+      displayName: 'Retrieve or Use Provided Storage Accounts'
+
+    # Step 3.1: Copy Python Script to VM
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          LOCAL_FILE_PATH="$(Build.SourcesDirectory)/scripts" 
+          REMOTE_DIRECTORY="/home/$(adminUsername)"
+
+          # Retrieve the public IP address of the VM
+          PUBLIC_IP=$(az vm list-ip-addresses --name "$(vmName)" --resource-group "${{ parameters.resourceGroupName }}" --query "[].virtualMachine.network.publicIpAddresses[0].ipAddress" --output tsv)
+          echo "Public IP of the VM is: $PUBLIC_IP"
+          
+          echo "Copying blob_management.py to VM"
+
+          # Use sshpass to copy blob_management.py to VM via SCP
+          sshpass -p "$(adminPassword)" scp -o StrictHostKeyChecking=no $LOCAL_FILE_PATH/blob_management.py $(adminUsername)@$PUBLIC_IP:$REMOTE_DIRECTORY/blob_management.py
+
+      displayName: 'Retrieve VM IP and Copy Python Script to VM'
+
+    # Step 3.2: Run Blob Management Script on VM
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          if [ "$(echo "${{ parameters.upload }}" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+              upload_flag=" --upload"
+          fi
+          
+          output=$(az vm run-command invoke --resource-group ${{ parameters.resourceGroupName }} --name $(vmName) \
+              --command-id RunShellScript \
+              --scripts ". /home/$(adminUsername)/venv/bin/activate && \
+                        python3 /home/$(adminUsername)/blob_management.py \
+                        --src-storage $(srcStorageAccount) \
+                        --dest-storage $(destStorageAccount) \
+                        --container-name ${{ parameters.containerName }}$upload_flag" \
+              --query "value[0].message" -o tsv)
+
+          echo "output: $output"
+          
+          # Check if output contains '[stderr]' and does not have an empty stderr message
+          # but also check for errors after '[stderr]' (e.g., keywords 'ERROR', 'fail')
+          if [[ "$output" == *'[stderr]'* && "$output" != *'[stderr]\n'* && ("$output" == *'ERROR'* || "$output" == *'fail'*) ]]; then
+            echo "Error occurred during VM command execution."
+            exit 1
+          fi
+
+          echo "----"
+          echo "Blob management script executed successfully."
+      displayName: 'Run Blob Management Script on VM'

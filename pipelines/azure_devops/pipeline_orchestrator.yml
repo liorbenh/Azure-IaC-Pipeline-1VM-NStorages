@@ -1,0 +1,101 @@
+trigger:
+- none
+
+pool: my-personal-computer
+
+parameters:
+  - name: activeVariableGroupName
+    type: string
+    default: ""
+    displayName: "Active Variable Group Name"
+
+  - name: InfrastructureDeploymentEnabled
+    type: boolean
+    default: true
+    displayName: "Enable Infrastructure Deployment"
+
+  - name: VMSoftwareConfigurationEnabled
+    type: boolean
+    default: true
+    displayName: "Enable VM Software Configuration"
+
+  - name: blobManagementEnabled
+    type: boolean
+    default: false
+    displayName: "Enable Blob Management"
+
+  - name: debug
+    type: boolean
+    default: true
+    displayName: "Debug Mode"
+
+variables:
+- group: ${{ parameters.activeVariableGroupName }}
+
+jobs:
+- job: InitializeVariables
+  displayName: "Initialize Runtime Variables"
+  steps:
+    - script: |
+        echo "##vso[task.setvariable variable=resourceGroupName;isOutput=true]$(subproject)-$(environment)-$(location)"
+        echo "##vso[task.setvariable variable=azureServiceConnection;isOutput=true]ASC-$(subproject)"
+        echo "Initialized resourceGroupName: $(subproject)-$(environment)-$(location)"
+        echo "Initialized azureServiceConnection: ASC-$(subproject)"
+      name: SetVariables
+      displayName: "Set Runtime Variables"
+
+- job: InfrastructureDeployment
+  dependsOn: 
+  - InitializeVariables
+  displayName: "Run Infrastructure Deployment"
+  condition: eq('${{ parameters.InfrastructureDeploymentEnabled }}', true)
+  variables:
+    resourceGroupName: $[dependencies.InitializeVariables.outputs['SetVariables.resourceGroupName']]
+    azureServiceConnection: $[dependencies.InitializeVariables.outputs['SetVariables.azureServiceConnection']]
+  steps:
+    - script: |
+        echo "Running Infrastructure Deployment for group: ${{ parameters.activeVariableGroupName }}"
+        az pipelines run --name "Infrastructure-Deployment" --parameters resourceGroupName=$(resourceGroupName) azureServiceConnection=$(azureServiceConnection) activeVariableGroupName=${{ parameters.activeVariableGroupName }} debug=${{ parameters.debug }}
+      displayName: "Execute Infrastructure Deployment"
+
+- job: VMSoftwareConfiguration
+  dependsOn: 
+  - InitializeVariables
+  - InfrastructureDeployment
+  displayName: "Configure VM Software"
+  condition: |
+    and
+    (
+      eq('${{ parameters.VMSoftwareConfigurationEnabled }}', true), 
+      in(dependencies.InfrastructureDeployment.result, 'Succeeded', 'Skipped')
+    )
+  variables:
+    resourceGroupName: $[dependencies.InitializeVariables.outputs['SetVariables.resourceGroupName']]
+    azureServiceConnection: $[dependencies.InitializeVariables.outputs['SetVariables.azureServiceConnection']]
+  steps:
+    - script: |
+        echo "Running VM Software Configuration for group: ${{ parameters.activeVariableGroupName }}"
+        az pipelines run --name "Configure-VM-Software" --parameters resourceGroupName=$(resourceGroupName) azureServiceConnection=$(azureServiceConnection) activeVariableGroupName=${{ parameters.activeVariableGroupName }} debug=${{ parameters.debug }}
+      displayName: "Execute VM Software Configuration"
+
+- job: BlobManagement
+  dependsOn: 
+  - InitializeVariables
+  - InfrastructureDeployment
+  - VMSoftwareConfiguration
+  displayName: "Run Blob Management"
+  condition: |
+    and
+    (
+      eq('${{ parameters.blobManagementEnabled }}', true),
+      in(dependencies.VMSoftwareConfiguration.result, 'Succeeded', 'Skipped'),
+      in(dependencies.InfrastructureDeployment.result, 'Succeeded', 'Skipped')
+    )
+  variables:
+    resourceGroupName: $[dependencies.InitializeVariables.outputs['SetVariables.resourceGroupName']]
+    azureServiceConnection: $[dependencies.InitializeVariables.outputs['SetVariables.azureServiceConnection']]
+  steps:
+    - script: |
+        echo "Running Blob Management for group: ${{ parameters.activeVariableGroupName }}"
+        az pipelines run --name "Manage-Blobs" --parameters resourceGroupName=$(resourceGroupName) azureServiceConnection=$(azureServiceConnection) activeVariableGroupName=${{ parameters.activeVariableGroupName }} debug=${{ parameters.debug }}
+      displayName: "Execute Blob Management"

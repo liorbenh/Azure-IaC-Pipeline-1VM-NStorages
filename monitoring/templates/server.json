@@ -1,0 +1,159 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "vmResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "The resource ID of the virtual machine to be monitored"
+      }
+    },
+    "workbookDisplayName": {
+      "type": "string",
+      "defaultValue": "VM Monitoring Workbook",
+      "metadata": {
+        "description": "The display name of the workbook"
+      }
+    },
+    "workbookType": {
+      "type": "string",
+      "defaultValue": "workbook",
+      "metadata": {
+        "description": "The gallery that the workbook will been shown under. Supported values include workbook, tsg, etc. Usually, this is 'workbook'"
+      }
+    },
+    "workbookSourceId": {
+      "type": "string",
+      "defaultValue": "azure monitor",
+      "metadata": {
+        "description": "The id of resource instance to which the workbook will be associated"
+      }
+    },
+    "workbookId": {
+      "type": "string",
+      "defaultValue": "[newGuid()]",
+      "metadata": {
+        "description": "The unique guid for this workbook instance"
+      }
+    }
+  },
+  "variables": {
+    "workbookContent": {
+        "version": "Notebook/1.0",
+        "items": [
+          {
+            "type": 10,
+            "content": {
+              "chartId": "workbook1e4315ad-75f3-4252-8ec3-0edd148a3306",
+              "version": "MetricsItem/2.0",
+              "size": 0,
+              "chartType": 2,
+              "resourceType": "microsoft.compute/virtualmachines",
+              "metricScope": 0,
+              "resourceIds": [
+                "[parameters('vmResourceId')]"
+              ],
+              "timeContext": {
+                "durationMs": 3600000
+              },
+              "metrics": [
+                {
+                  "namespace": "microsoft.compute/virtualmachines",
+                  "metric": "microsoft.compute/virtualmachines--Available Memory Bytes",
+                  "aggregation": 4
+                }
+              ],
+              "title": "Memory Availability [GiB]",
+              "gridSettings": {
+                "rowLimit": 10000
+              }
+            },
+            "name": "Memory Availability [GiB]"
+          },
+          {
+            "type": 10,
+            "content": {
+              "chartId": "workbook9cd80407-0b20-4046-a4dd-ffe5a7cb12a4",
+              "version": "MetricsItem/2.0",
+              "size": 0,
+              "chartType": 2,
+              "resourceType": "microsoft.compute/virtualmachines",
+              "metricScope": 0,
+              "resourceIds": [
+                "[parameters('vmResourceId')]"
+              ],
+              "timeContext": {
+                "durationMs": 3600000
+              },
+              "metrics": [
+                {
+                  "namespace": "microsoft.compute/virtualmachines",
+                  "metric": "microsoft.compute/virtualmachines--Data Disk Read Operations/Sec",
+                  "aggregation": 4
+                },
+                {
+                  "namespace": "microsoft.compute/virtualmachines",
+                  "metric": "microsoft.compute/virtualmachines--Disk Write Operations/Sec",
+                  "aggregation": 4
+                }
+              ],
+              "title": "Data Disk Read/Write [Operations/second]",
+              "gridSettings": {
+                "rowLimit": 10000
+              }
+            },
+            "name": "Data Disk Read/Write [Operations/second]"
+          },
+          {
+            "type": 10,
+            "content": {
+              "chartId": "workbook37cf8158-cb18-43a8-8da4-f57d7402039b",
+              "version": "MetricsItem/2.0",
+              "size": 0,
+              "chartType": 2,
+              "resourceType": "microsoft.compute/virtualmachines",
+              "metricScope": 0,
+              "resourceIds": [
+                "[parameters('vmResourceId')]"
+              ],
+              "timeContext": {
+                "durationMs": 3600000
+              },
+              "metrics": [
+                {
+                  "namespace": "microsoft.compute/virtualmachines",
+                  "metric": "microsoft.compute/virtualmachines--Percentage CPU",
+                  "aggregation": 4
+                }
+              ],
+              "title": "CPU Usage [Percentage]",
+              "gridSettings": {
+                "rowLimit": 10000
+              }
+            },
+            "name": "CPU Usage [Percentage]"
+          }
+        ],
+        "fallbackResourceIds": [
+          "Azure Monitor"
+        ],
+        "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+      }
+  },
+  "resources": [
+    {
+      "type": "microsoft.insights/workbooks",
+      "apiVersion": "2022-04-01",
+      "name": "[parameters('workbookId')]",
+      "location": "[resourceGroup().location]",
+      "kind": "shared",
+      "properties": {
+        "displayName": "[parameters('workbookDisplayName')]",
+        "serializedData": "[string(variables('workbookContent'))]",
+        "version": "1.0",
+        "sourceId": "[parameters('workbookSourceId')]",
+        "category": "[parameters('workbookType')]"
+      }
+    }
+  ]
+}
