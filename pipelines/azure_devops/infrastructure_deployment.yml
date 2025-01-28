@@ -177,6 +177,7 @@ jobs:
             echo "Blob storage accounts names retrieved: $blobStorageAccountsNames"
         else
             echo "Error: Output is not in expected array format"
+            echo "Output: $blobStorageAccountsNames"
             exit 1
         fi
 

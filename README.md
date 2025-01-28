@@ -191,7 +191,7 @@ Common issues and solutions:
 1. **Pipeline Permission Errors**
    - Verify service connection permissions
    - Check variable group access rights
-   - Ensure agent has required access
+   - Ensure agent has required access (az login inside agent with the tenant if needed)
 
 2. **Resource Deployment Failures**
    - Validate ARM template syntax
